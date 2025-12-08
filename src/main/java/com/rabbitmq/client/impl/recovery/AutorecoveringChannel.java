@@ -222,6 +222,16 @@ public class AutorecoveringChannel implements RecoverableChannel {
     }
 
     @Override
+    public <T> CompletableFuture<T> basicPublishAsync(String exchange, String routingKey, AMQP.BasicProperties props, byte[] body, T context) {
+        return delegate.basicPublishAsync(exchange, routingKey, props, body, context);
+    }
+
+    @Override
+    public <T> CompletableFuture<T> basicPublishAsync(String exchange, String routingKey, boolean mandatory, AMQP.BasicProperties props, byte[] body, T context) {
+        return delegate.basicPublishAsync(exchange, routingKey, mandatory, props, body, context);
+    }
+
+    @Override
     public AMQP.Exchange.DeclareOk exchangeDeclare(String exchange, String type) throws IOException {
         return exchangeDeclare(exchange, type, false, false, null);
     }

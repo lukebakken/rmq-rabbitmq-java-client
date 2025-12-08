@@ -643,6 +643,19 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
         return channel;
     }
 
+    /** Public API - {@inheritDoc} */
+    @Override
+    public Channel createChannel(ChannelOptions options) throws IOException {
+        ensureIsOpen();
+        ChannelManager cm = _channelManager;
+        if (cm == null) return null;
+        Channel channel = cm.createChannel(this, options);
+        if (channel != null) {
+            metricsCollector.newChannel(channel);
+        }
+        return channel;
+    }
+
     /**
      * Public API - sends a frame directly to the broker.
      */

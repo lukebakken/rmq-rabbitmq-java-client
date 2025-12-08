@@ -15,6 +15,7 @@
 
 package com.rabbitmq.client.impl;
 
+import com.rabbitmq.client.ChannelOptions;
 import com.rabbitmq.client.ConnectionFactory;
 import com.rabbitmq.client.MetricsCollector;
 import com.rabbitmq.client.NoOpMetricsCollector;
@@ -210,7 +211,28 @@ public class ChannelManager {
         return ch;
     }
 
+    public ChannelN createChannel(AMQConnection connection, ChannelOptions options) throws IOException {
+        ChannelN ch;
+        lock.lock();
+        try {
+            int channelNumber = channelNumberAllocator.allocate();
+            if (channelNumber == -1) {
+                return null;
+            } else {
+                ch = addNewChannel(connection, channelNumber, options);
+            }
+        } finally {
+            lock.unlock();
+        }
+        ch.open(); // now that it's been safely added
+        return ch;
+    }
+
     private ChannelN addNewChannel(AMQConnection connection, int channelNumber) {
+        return addNewChannel(connection, channelNumber, null);
+    }
+
+    private ChannelN addNewChannel(AMQConnection connection, int channelNumber, ChannelOptions options) {
         if (_channelMap.containsKey(channelNumber)) {
             // That number's already allocated! Can't do it
             // This should never happen unless something has gone
@@ -220,14 +242,27 @@ public class ChannelManager {
                     + "use. This should never happen. "
                     + "Please report this as a bug.");
         }
-        ChannelN ch = instantiateChannel(connection, channelNumber, this.workService);
+        // When options is null, call the 3-parameter instantiateChannel() to allow
+        // subclasses that override that method to work correctly. This maintains
+        // backward compatibility with existing ChannelManager subclasses.
+        ChannelN ch;
+        if (options == null) {
+            ch = instantiateChannel(connection, channelNumber, this.workService);
+        } else {
+            ch = instantiateChannel(connection, channelNumber, this.workService, options);
+        }
         _channelMap.put(ch.getChannelNumber(), ch);
         return ch;
     }
 
     protected ChannelN instantiateChannel(AMQConnection connection, int channelNumber, ConsumerWorkService workService) {
+        return instantiateChannel(connection, channelNumber, workService, null);
+    }
+
+    protected ChannelN instantiateChannel(AMQConnection connection, int channelNumber,
+                                          ConsumerWorkService workService, ChannelOptions options) {
         return new ChannelN(connection, channelNumber, workService,
-                            this.metricsCollector, this.observationCollector);
+                            this.metricsCollector, this.observationCollector, options);
     }
 
     /**

@@ -300,6 +300,103 @@ public interface Channel extends ShutdownNotifier, AutoCloseable {
             throws IOException;
 
     /**
+     * Asynchronously publish a message and wait for publisher confirmation if enabled.
+     * <p>
+     * This method publishes a message and returns a {@link CompletableFuture} that completes when
+     * the broker confirms receipt of the message. Publisher confirmation tracking must be enabled
+     * via {@link ChannelOptions} when creating the channel.
+     * <p>
+     * <b>Behavior based on configuration:</b>
+     * <ul>
+     *   <li>If publisher confirmation tracking is <b>enabled</b>: The future completes when the broker
+     *       sends Basic.Ack, or completes exceptionally on Basic.Nack or Basic.Return</li>
+     *   <li>If publisher confirmation tracking is <b>disabled</b>: The future completes immediately
+     *       after the message is sent (no confirmation tracking)</li>
+     * </ul>
+     * <p>
+     * <b>Exception handling:</b>
+     * <p>
+     * The returned future may complete exceptionally with:
+     * <ul>
+     *   <li>{@link PublishException} - When the broker nacks the message or returns it as unroutable.
+     *       Use {@link PublishException#isReturn()} to distinguish between nack and return.
+     *       For returns, additional details are available via {@link PublishException#getReplyCode()},
+     *       {@link PublishException#getReplyText()}, {@link PublishException#getExchange()}, and
+     *       {@link PublishException#getRoutingKey()}</li>
+     *   <li>{@link AlreadyClosedException} - When the channel closes before confirmation is received</li>
+     *   <li>{@link IOException} - When an I/O error occurs during publish</li>
+     * </ul>
+     * <p>
+     * <b>Thread safety:</b> This method is thread-safe when publisher confirmation tracking is enabled.
+     * <p>
+     * <b>Example usage:</b>
+     * <pre>{@code
+     * ThrottlingRateLimiter limiter = new ThrottlingRateLimiter(100, 50);
+     * ChannelOptions options = ChannelOptions.builder()
+     *     .publisherConfirmations(true)
+     *     .publisherConfirmationTracking(true)
+     *     .rateLimiter(limiter)
+     *     .build();
+     * Channel channel = connection.createChannel(options);
+     *
+     * // Example 1: Using a correlation ID as context
+     * String messageId = "msg-123";
+     * channel.basicPublishAsync("", queueName, null, "Hello".getBytes(), messageId)
+     *     .thenAccept(ctx -> System.out.println("Confirmed: " + ctx))
+     *     .exceptionally(ex -> {
+     *         if (ex.getCause() instanceof PublishException) {
+     *             PublishException pe = (PublishException) ex.getCause();
+     *             System.err.println("Publish failed: " + pe.getMessage());
+     *         }
+     *         return null;
+     *     });
+     *
+     * // Example 2: Using null context when tracking not needed
+     * channel.basicPublishAsync("", queueName, null, "Hello".getBytes(), null)
+     *     .thenRun(() -> System.out.println("Confirmed"));
+     * }</pre>
+     *
+     * @param <T> the type of the context object
+     * @param exchange the exchange to publish the message to
+     * @param routingKey the routing key
+     * @param props other properties for the message - routing headers etc
+     * @param body the message body
+     * @param context user-provided context object (such as a correlation ID) that will be returned when the future completes
+     * @return a CompletableFuture that completes with the context when the message is confirmed by the broker,
+     *         or immediately if tracking is disabled
+     * @see ChannelOptions
+     * @see PublishException
+     * @see Connection#createChannel(ChannelOptions)
+     */
+    <T> CompletableFuture<T> basicPublishAsync(String exchange, String routingKey, BasicProperties props, byte[] body, T context);
+
+    /**
+     * Asynchronously publish a message with the mandatory flag and wait for publisher confirmation if enabled.
+     * <p>
+     * This method is identical to {@link #basicPublishAsync(String, String, BasicProperties, byte[], Object)}
+     * but allows setting the mandatory flag. When mandatory is true and the message cannot be routed,
+     * the broker will return the message via Basic.Return, which will cause the future to complete
+     * exceptionally with {@link PublishException} where {@link PublishException#isReturn()} returns true.
+     * <p>
+     * See {@link #basicPublishAsync(String, String, BasicProperties, byte[], Object)} for complete documentation
+     * on behavior, exception handling, and usage examples.
+     *
+     * @param <T> the type of the context object
+     * @param exchange the exchange to publish the message to
+     * @param routingKey the routing key
+     * @param mandatory true if the 'mandatory' flag is to be set
+     * @param props other properties for the message - routing headers etc
+     * @param body the message body
+     * @param context user-provided context object (such as a correlation ID) that will be returned when the future completes
+     * @return a CompletableFuture that completes with the context when the message is confirmed by the broker,
+     *         or immediately if tracking is disabled
+     * @see #basicPublishAsync(String, String, BasicProperties, byte[], Object)
+     * @see ChannelOptions
+     * @see PublishException
+     */
+    <T> CompletableFuture<T> basicPublishAsync(String exchange, String routingKey, boolean mandatory, BasicProperties props, byte[] body, T context);
+
+    /**
      * Actively declare a non-autodelete, non-durable exchange with no extra arguments
      * @see com.rabbitmq.client.AMQP.Exchange.Declare
      * @see com.rabbitmq.client.AMQP.Exchange.DeclareOk

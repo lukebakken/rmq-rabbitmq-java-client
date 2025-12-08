@@ -140,6 +140,31 @@ public interface Connection extends ShutdownNotifier, Closeable { // rename to A
     Channel createChannel(int channelNumber) throws IOException;
 
     /**
+     * Create a new channel with the specified options.
+     * <p>
+     * The channel number is allocated internally. Use this method to create channels
+     * with publisher confirmation tracking enabled.
+     * <p>
+     * <b>Example usage:</b>
+     * <pre>{@code
+     * ChannelOptions options = new ChannelOptions(true, true, 100);
+     * Channel channel = connection.createChannel(options);
+     *
+     * CompletableFuture<Void> future = channel.basicPublishAsync(
+     *     "", queueName, null, "Hello".getBytes()
+     * );
+     * future.join(); // Wait for broker confirmation
+     * }</pre>
+     *
+     * @param options the channel options, including publisher confirmation settings
+     * @return a new channel descriptor, or null if none is available
+     * @throws IOException if an I/O problem is encountered
+     * @see ChannelOptions
+     * @see Channel#basicPublishAsync(String, String, com.rabbitmq.client.AMQP.BasicProperties, byte[])
+     */
+    Channel createChannel(ChannelOptions options) throws IOException;
+
+    /**
      * Create a new channel wrapped in an {@link Optional}.
      * The channel number is allocated internally.
      * <p>
@@ -201,23 +226,23 @@ public interface Connection extends ShutdownNotifier, Closeable { // rename to A
      * Close this connection and all its channels
      * with the {@link com.rabbitmq.client.AMQP#REPLY_SUCCESS} close code
      * and message 'OK'.
-     * 
+     *
      * This method behaves in a similar way as {@link #close()}, with the only difference
      * that it waits with a provided timeout for all the close operations to
      * complete. When timeout is reached the socket is forced to close.
-     * 
+     *
      * @param timeout timeout (in milliseconds) for completing all the close-related
      * operations, use -1 for infinity
      * @throws IOException if an I/O problem is encountered
      */
     void close(int timeout) throws IOException;
-    
+
     /**
      * Close this connection and all its channels.
      *
      * Waits with the given timeout for all the close operations to complete.
      * When timeout is reached the socket is forced to close.
-     * 
+     *
      * @param closeCode the close code (See under "Reply Codes" in the AMQP specification)
      * @param closeMessage a message indicating the reason for closing the connection
      * @param timeout timeout (in milliseconds) for completing all the close-related
@@ -235,18 +260,18 @@ public interface Connection extends ShutdownNotifier, Closeable { // rename to A
      * Any encountered exceptions in the close operations are silently discarded.
      */
     void abort();
-    
+
     /**
      * Abort this connection and all its channels.
      *
      * Forces the connection to close and waits for all the close operations to complete.
      * Any encountered exceptions in the close operations are silently discarded.
-     * 
+     *
      * @param closeCode the close code (See under "Reply Codes" in the AMQP specification)
      * @param closeMessage a message indicating the reason for closing the connection
      */
     void abort(int closeCode, String closeMessage);
-    
+
     /**
      * Abort this connection and all its channels
      * with the {@link com.rabbitmq.client.AMQP#REPLY_SUCCESS} close code

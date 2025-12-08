@@ -194,6 +194,20 @@ public class AutorecoveringConnection implements RecoverableConnection, NetworkC
     }
 
     /**
+     * @see com.rabbitmq.client.Connection#createChannel(ChannelOptions)
+     */
+    @Override
+    public Channel createChannel(ChannelOptions options) throws IOException {
+        RecoveryAwareChannelN ch = (RecoveryAwareChannelN) delegate.createChannel(options);
+        // No Sonar: the channel could be null
+        if (ch == null) { //NOSONAR
+            return null;
+        } else {
+            return this.wrapChannel(ch);
+        }
+    }
+
+    /**
      * Creates a recovering channel from a regular channel and registers it.
      * If the regular channel cannot be created (e.g. too many channels are open
      * already), returns null.

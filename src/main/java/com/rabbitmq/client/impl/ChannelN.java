@@ -21,6 +21,7 @@ import com.rabbitmq.client.Method;
 import com.rabbitmq.client.AMQP.BasicProperties;
 import com.rabbitmq.client.impl.AMQImpl.Channel;
 import com.rabbitmq.client.impl.AMQImpl.Queue;
+import com.rabbitmq.client.impl.PublisherConfirmationManager;
 import com.rabbitmq.client.impl.AMQImpl.*;
 import com.rabbitmq.client.observation.ObservationCollector;
 import com.rabbitmq.utility.Utility;
@@ -90,6 +91,8 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
     /** Whether any nacks have been received since the last waitForConfirms(). */
     private volatile boolean onlyAcksReceived = true;
 
+    private final PublisherConfirmationManager confirmationManager;
+
     protected final MetricsCollector metricsCollector;
     private final ObservationCollector observationCollector;
 
@@ -121,10 +124,28 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
     public ChannelN(AMQConnection connection, int channelNumber,
                     ConsumerWorkService workService,
                     MetricsCollector metricsCollector, ObservationCollector observationCollector) {
+        this(connection, channelNumber, workService, metricsCollector, observationCollector, null);
+    }
+
+    /**
+     * Construct a new channel on the given connection with the given
+     * channel number and options.
+     * @param connection The connection associated with this channel
+     * @param channelNumber The channel number to be associated with this channel
+     * @param workService service for managing this channel's consumer callbacks
+     * @param metricsCollector service for managing metrics
+     * @param observationCollector service for managing observations
+     * @param options channel options
+     */
+    public ChannelN(AMQConnection connection, int channelNumber,
+                    ConsumerWorkService workService,
+                    MetricsCollector metricsCollector, ObservationCollector observationCollector,
+                    ChannelOptions options) {
         super(connection, channelNumber);
         this.dispatcher = new ConsumerDispatcher(connection, this, workService);
         this.metricsCollector = metricsCollector;
         this.observationCollector = observationCollector;
+        this.confirmationManager = new PublisherConfirmationManager(options);
     }
 
     /**
@@ -135,6 +156,11 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
     public void open() throws IOException {
         // wait for the Channel.OpenOk response, and ignore it
         exnWrappingRpc(new Channel.Open(UNSPECIFIED_OUT_OF_BAND));
+
+        // Enable publisher confirmations if tracking is enabled
+        if (confirmationManager.isPublisherConfirmationTrackingEnabled()) {
+            confirmSelect();
+        }
     }
 
     @Override
@@ -301,12 +327,16 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
      */
     private void finishProcessShutdownSignal()
     {
+        ShutdownSignalException shutdownSignalException = getCloseReason();
+
         this.dispatcher.quiesce();
-        broadcastShutdownSignal(getCloseReason());
+        broadcastShutdownSignal(shutdownSignalException);
 
         synchronized (unconfirmedSet) {
             unconfirmedSet.notifyAll();
         }
+
+        confirmationManager.finishProcessShutdownSignal(shutdownSignalException);
     }
 
     /**
@@ -483,13 +513,14 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
     }
 
     private void callReturnListeners(Command command, Basic.Return basicReturn) {
+        BasicProperties props = (BasicProperties)command.getContentHeader();
         try {
             for (ReturnListener l : this.returnListeners) {
                 l.handleReturn(basicReturn.getReplyCode(),
                     basicReturn.getReplyText(),
                     basicReturn.getExchange(),
                     basicReturn.getRoutingKey(),
-                    (BasicProperties) command.getContentHeader(),
+                    props,
                     command.getContentBody());
             }
         } catch (Throwable ex) {
@@ -497,6 +528,10 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
         } finally {
             metricsCollector.basicPublishUnrouted(this);
         }
+
+        // Note: this will only return a non-zero seqNo if publisher confirmation tracking is enabled.
+        long seqNoFromHeaders = confirmationManager.handleReturn(props, basicReturn);
+        unconfirmedSet.remove(seqNoFromHeaders);
     }
 
     private void callConfirmListeners(@SuppressWarnings("unused") Command command, Basic.Ack ack) {
@@ -743,6 +778,68 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
             throw e;
         }
         metricsCollector.basicPublish(this, deliveryTag);
+    }
+
+    /** Public API - {@inheritDoc} */
+    @Override
+    public <T> CompletableFuture<T> basicPublishAsync(String exchange, String routingKey,
+                                                       BasicProperties props, byte[] body, T context) {
+        return basicPublishAsync(exchange, routingKey, false, props, body, context);
+    }
+
+    /** Public API - {@inheritDoc} */
+    @Override
+    public <T> CompletableFuture<T> basicPublishAsync(String exchange, String routingKey,
+                                                       boolean mandatory,
+                                                       BasicProperties props, byte[] body, T context) {
+        PublisherConfirmationManager.PublisherConfirmationState<T> confirmationState = null;
+        long currentPublishSeqNo = 0;
+        try {
+            confirmationState = confirmationManager.start();
+            if (confirmationState.isDone()) {
+                return confirmationState.getFuture();
+            }
+
+            if (props == null) {
+                props = MessageProperties.MINIMAL_BASIC;
+            }
+
+            if (nextPublishSeqNo > 0) {
+                currentPublishSeqNo = getNextPublishSeqNo();
+
+                unconfirmedSet.add(currentPublishSeqNo);
+                confirmationManager.maybePutEntry(currentPublishSeqNo, confirmationState, context);
+                props = confirmationManager.maybeBuildProps(props, currentPublishSeqNo);
+
+                nextPublishSeqNo++;
+            } else {
+                currentPublishSeqNo = 0;
+            }
+
+            AMQP.Basic.Publish publish = new Basic.Publish.Builder()
+                    .exchange(exchange)
+                    .routingKey(routingKey)
+                    .mandatory(mandatory)
+                    .immediate(false)
+                    .build();
+
+            ObservationCollector.PublishCall publishCall = properties -> {
+                AMQCommand command = new AMQCommand(publish, properties, body);
+                transmit(command);
+            };
+            observationCollector.publish(publishCall, publish, props, body, this.connectionInfo());
+            metricsCollector.basicPublish(this, currentPublishSeqNo);
+            confirmationManager.maybeCompleteImmediately(confirmationState, context);
+        } catch (IOException | AlreadyClosedException e) {
+            metricsCollector.basicPublishFailure(this, e);
+            confirmationManager.completeExceptionally(currentPublishSeqNo, e);
+            if (nextPublishSeqNo > 0) {
+                unconfirmedSet.remove(currentPublishSeqNo);
+                nextPublishSeqNo--;
+            }
+        }
+
+        return confirmationState.getFuture();
     }
 
     /** Public API - {@inheritDoc} */
@@ -1648,10 +1745,14 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
         } else {
             unconfirmedSet.remove(seqNo);
         }
+
+        confirmationManager.handleAckNack(seqNo, multiple, nack);
+
         synchronized (unconfirmedSet) {
             onlyAcksReceived = onlyAcksReceived && !nack;
-            if (unconfirmedSet.isEmpty())
+            if (unconfirmedSet.isEmpty()) {
                 unconfirmedSet.notifyAll();
+            }
         }
     }
 
