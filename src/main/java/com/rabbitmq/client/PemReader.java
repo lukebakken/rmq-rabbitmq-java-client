@@ -50,20 +50,21 @@ import static javax.crypto.Cipher.DECRYPT_MODE;
  * The following modifications have been made to the original source code:
  * <ul>
  * <li>removed methods around loading trustStores.</li>
+ * <li>updated the regular expressions to avoid exponential backtracking.</li>
  * </ul>
  */
 public final class PemReader {
 
     private static final Pattern CERT_PATTERN = Pattern.compile(
-        "-+BEGIN\\s+.*CERTIFICATE[^-]*-+(?:\\s|\\r|\\n)+" // Header
-        + "([a-z0-9+/=\\r\\n]+)"                     // Base64 text
-        + "-+END\\s+.*CERTIFICATE[^-]*-+",           // Footer
+        "-+BEGIN\\s+.*CERTIFICATE[^-]*-+\\s*"  // Header
+            + "([a-z0-9+/=\\r\\n]+)"           // Base64 text
+            + "-+END\\s+.*CERTIFICATE[^-]*-+", // Footer
         CASE_INSENSITIVE);
 
     private static final Pattern PRIVATE_KEY_PATTERN = Pattern.compile(
-        "-+BEGIN\\s+.*PRIVATE\\s+KEY[^-]*-+(?:\\s|\\r|\\n)+" // Header
-        + "([a-z0-9+/=\\r\\n]+)"                       // Base64 text
-        + "-+END\\s+.*PRIVATE\\s+KEY[^-]*-+",            // Footer
+        "-+BEGIN\\s+.*PRIVATE\\s+KEY[^-]*-+\\s*"  // Header
+            + "([a-z0-9+/=\\r\\n]+)"              // Base64 text
+            + "-+END\\s+.*PRIVATE\\s+KEY[^-]*-+", // Footer
         CASE_INSENSITIVE);
 
     private PemReader() {
